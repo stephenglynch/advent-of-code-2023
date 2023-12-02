@@ -1,15 +1,12 @@
 use std::fs;
 use nom::{
     IResult,
-    bytes::complete::{tag, take_while_m_n},
+    bytes::complete::tag,
     branch::alt,
-    character::complete::{char, one_of},
+    character::complete::one_of,
     combinator::{map, recognize},
-    sequence::terminated,
-    multi::{separated_list0, many0, many1},
-    sequence::tuple
+    multi::{separated_list0, many1}
 };
-
 
 enum Colour {
     Red,
@@ -63,14 +60,11 @@ fn parse_num_cubes(input: &str) -> IResult<&str, (Colour, u32)> {
 fn parse_game(line: &str) -> u32 {
     let (input, id) = parse_game_id(line).unwrap();
     let (_, rounds) = separated_list0(tag("; "), parse_round)(input).unwrap();
-    println!("Game {id}");
     for (r, g, b) in rounds {
-        println!("r = {r} g = {g} b = {b}");
         if r > 12 || g > 13 || b > 14{
             return 0
         }
     }
-    println!();
     id
 }
 

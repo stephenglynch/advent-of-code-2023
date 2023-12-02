@@ -57,25 +57,33 @@ fn parse_num_cubes(input: &str) -> IResult<&str, (Colour, u32)> {
     Ok((input, (colour, num)))
 }
 
-fn parse_game(line: &str) -> u32 {
-    let (input, id) = parse_game_id(line).unwrap();
+fn parse_game(line: &str) -> (u32, u32, u32) {
+    let (input, _) = parse_game_id(line).unwrap();
     let (_, rounds) = separated_list0(tag("; "), parse_round)(input).unwrap();
+    let mut reds = vec![0]; // Put a 0 value just so they're not empty
+    let mut greens = vec![0];
+    let mut blues = vec![0];
     for (r, g, b) in rounds {
-        if r > 12 || g > 13 || b > 14{
-            return 0
-        }
+        reds.push(r);
+        greens.push(g);
+        blues.push(b);
     }
-    id
+    (
+        *reds.iter().max().unwrap(),
+        *greens.iter().max().unwrap(),
+        *blues.iter().max().unwrap()
+    )
 }
 
 fn main() {
     let contents = fs::read_to_string("input/input.txt").unwrap();
     let contents = contents.trim();
-    let mut sum_of_ids = 0;
+    let mut sum_of_powers = 0;
 
     for line in contents.lines() {
-        sum_of_ids += parse_game(line);
+        let (min_reds, min_greens, min_blues) = parse_game(line);
+        sum_of_powers += min_reds * min_greens * min_blues;
     }
 
-    println!("Answer = {}", sum_of_ids);
+    println!("Answer = {}", sum_of_powers);
 }

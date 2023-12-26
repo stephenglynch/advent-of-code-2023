@@ -1,3 +1,8 @@
+// Solving this problem seems to be hard problem. However, a technique called
+// spectral partitioning can provide a number of sane candidate partitions that
+// balance separation of groups whilst minimising "cuts". We search for a
+// grouping that results in 3 cuts out of the candidate partitions
+
 use std::fs;
 use std::str;
 use std::collections::{HashMap, HashSet};
@@ -14,7 +19,7 @@ fn parse_netlist(input: &str) -> HashMap<String, Vec<String>> {
     netlist
 }
 
-fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (HashMap<usize, Vec<usize>>, Vec<String>) {
+fn partial_netlist_to_full(netlist: HashMap<String, Vec<String>>) -> HashMap<String, HashSet<String>> {
 
     // Determine total set of parts
     let mut parts = HashSet::new();
@@ -25,58 +30,71 @@ fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (HashMap<usize, V
         }
     }
 
-    let parts_map: HashMap<String, usize> = parts.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
-    let mut graph = HashMap::new();
+    let mut new_netlist = HashMap::new();
 
     // Initialise graph
     for p in &parts {
-        let i = *parts_map.get(p).unwrap();
-        graph.insert(i, vec![]);
+        new_netlist.insert(p.clone(), HashSet::new());
     }
 
     for comp1 in parts.iter() {
-        let row = *parts_map.get(comp1).unwrap();
         if let Some(conn_list1) = netlist.get(comp1) {
             for c in conn_list1 {
-                let col = *parts_map.get(c).unwrap();
-                graph.get_mut(&row).unwrap().push(col);
+                new_netlist.get_mut(comp1).unwrap().insert(c.clone());
             }
         }
 
         for (comp2, conn_list2) in netlist.iter() {
-            let col = *parts_map.get(comp2).unwrap();
-
             if conn_list2.contains(comp1) {
-                graph.get_mut(&row).unwrap().push(col);
+                new_netlist.get_mut(comp1).unwrap().insert(comp2.clone());
             }
         }
     }
 
-    let designators = parts.into_iter().collect();
-
-    (graph, designators)
+    new_netlist
 }
 
-fn generate_matrix(graph: &HashMap<usize, Vec<usize>>) -> CsrMatrix<f64> {
-    let len = graph.len();
+fn netlist_to_matrix(netlist: &HashMap<String, HashSet<String>>, mapping: &Vec<String>) -> CsrMatrix<f64> {
+    let len = netlist.len();
     let mut coo = CooMatrix::<f64>::new(len, len);
-    for (row, cols) in graph {
-        for col in cols {
-            coo.push(*row, *col, -1.0);
-            coo.push(*col, *row, -1.0);
-            coo.push(*row, *row, 1.0);
+    for (p1, conns) in netlist {
+        let row = mapping.iter().position(|s| s == p1).unwrap();
+        for p2 in conns {
+            let col = mapping.iter().position(|s| s == p2).unwrap();
+            coo.push(row, col, -1.0);
+            coo.push(row, row, 1.0);
         }
     }
     CsrMatrix::from(&coo)
 }
 
-fn calc_cuts(graph: &HashMap<usize, Vec<usize>>, group: &Vec<usize>) -> usize {
+fn calc_candidate_groups(netlist: &HashMap<String, HashSet<String>>, num_grps: usize) -> Vec<Vec<String>> {
+    let mapping = netlist.keys().cloned().collect();
+    let mat = netlist_to_matrix(&netlist, &mapping);
+    let svd = svd(&mat).unwrap();
+    let ut = svd.ut.t();
+
+    let mut groups = vec![];
+
+    for i in 0..num_grps {
+        let v = ut.column(svd.d - 1 - i);
+        let group = v
+            .indexed_iter()
+            .filter(|(_, v)| **v > 0.0)
+            .map(|(i, _)| (&mapping[i]).clone())
+            .collect();
+        groups.push(group);
+    }
+
+    groups
+}
+
+fn calc_cuts(netlist: &HashMap<String, HashSet<String>>, group: &Vec<String>) -> usize {
     let group1 = group;
-    let group2: Vec<usize> = graph.keys().copied().filter(|p| !group1.contains(p)).collect();
 
     let mut total_cuts = 0;
     for p1 in group1 {
-        let conns = graph.get(p1).unwrap();
+        let conns = netlist.get(p1).unwrap();
         for p2 in conns {
             if !group1.contains(p2) {
                 total_cuts += 1;
@@ -87,66 +105,18 @@ fn calc_cuts(graph: &HashMap<usize, Vec<usize>>, group: &Vec<usize>) -> usize {
     total_cuts
 }
 
-fn print_group(group: &Vec<usize>, desig: &Vec<String>) {
-    let mut v: Vec<String> = group.iter().map(|r| (&desig[*r]).to_string()).collect();
-    v.sort();
-    println!("group:\n{:?}", v);
-}
-
 fn main() {
-    let contents = fs::read_to_string("input/example.txt").unwrap();
+    let contents = fs::read_to_string("input/input.txt").unwrap();
     let contents = contents.trim();
     let netlist = parse_netlist(contents);
-    
-    let (graph, desig) = netlist_to_vector(netlist);
-    println!("graph:\n{:?}", graph);
-    let len = graph.len();
-    let mat = generate_matrix(&graph);
+    let netlist = partial_netlist_to_full(netlist);
 
-    println!("mat = {}", mat.ncols());
-    let svd = svd(&mat).unwrap();
-    println!("svd.d = {}", svd.d);
-    // println!("svd.s:\n{:?}", svd.s);
-    println!("svd.ut:\n{}", svd.ut.t().column(13).len());
+    let groups = calc_candidate_groups(&netlist, 10);
 
-    let ut = svd.ut.t();
-
-    println!("eigenvalues:\n{}", svd.s);
-    println!();
-
-    let v = ut.column(svd.d - 1);
-    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
-    print_group(&group, &desig);
-    let cuts = calc_cuts(&graph, &group);
-    let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
-    let g2_len = len - g1_len;
-    println!("cuts = {}", cuts);
-    println!("answer = {}", g1_len * g2_len);
-    println!();
-
-    let v = ut.column(svd.d - 2);
-    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
-    print_group(&group, &desig);
-    let cuts = calc_cuts(&graph, &group);
-    let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
-    let g2_len = len - g1_len;
-    println!("cuts = {}", cuts);
-    println!("answer = {}", g1_len * g2_len);
-    println!();
-
-    let v = ut.column(svd.d - 3);
-    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
-    print_group(&group, &desig);
-    let cuts = calc_cuts(&graph, &group);
-    let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
-    let g2_len = len - g1_len;
-    println!("cuts = {}", cuts);
-    println!("answer = {}", g1_len * g2_len);
-
-    // let eig = lap_mat.symmetric_eigen();
-    // println!("eigenvalues:\n{}", eig.eigenvalues);
-
-    // for i in 0..len {
-    //     println!("eigenvector {}:\n{}", i, eig.eigenvectors.column(i));
-    // }
+    for g in groups {
+        let cuts = calc_cuts(&netlist, &g);
+        if cuts == 3{
+            println!("answer = {}", g.len() * (netlist.len() - g.len()));
+        }
+    }
 }

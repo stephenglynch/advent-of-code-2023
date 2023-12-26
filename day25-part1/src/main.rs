@@ -2,7 +2,6 @@ use std::fs;
 use std::str;
 use std::collections::{HashMap, HashSet};
 use nalgebra_sparse::{CooMatrix, CsrMatrix};
-use nalgebra::DMatrix;
 use svdlibrs::svd;
 
 fn parse_netlist(input: &str) -> HashMap<String, Vec<String>> {
@@ -15,7 +14,7 @@ fn parse_netlist(input: &str) -> HashMap<String, Vec<String>> {
     netlist
 }
 
-fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (Vec<f64>, HashMap<usize, Vec<usize>>, usize) {
+fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (HashMap<usize, Vec<usize>>, Vec<String>) {
 
     // Determine total set of parts
     let mut parts = HashSet::new();
@@ -26,14 +25,12 @@ fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (Vec<f64>, HashMa
         }
     }
 
-    let len = parts.len();
     let parts_map: HashMap<String, usize> = parts.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
-    let mut lap_mat = vec![0.0; len * len];
     let mut graph = HashMap::new();
 
     // Initialise graph
-    for p in parts {
-        let i = *parts_map.get(&p).unwrap();
+    for p in &parts {
+        let i = *parts_map.get(p).unwrap();
         graph.insert(i, vec![]);
     }
 
@@ -42,15 +39,7 @@ fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (Vec<f64>, HashMa
         if let Some(conn_list1) = netlist.get(comp1) {
             for c in conn_list1 {
                 let col = *parts_map.get(c).unwrap();
-    
-                // Create symmetric adjacency matrix representing node connections
-                lap_mat[len * row + col] = -1.0;
-                lap_mat[len * col + row] = -1.0;
-    
-                // Fill diagonal with number of edges (degree matrix)
-                lap_mat[len * row + row] += 1.0;
-
-                graph.get(&row).unwrap().push(col);
+                graph.get_mut(&row).unwrap().push(col);
             }
         }
 
@@ -58,19 +47,14 @@ fn netlist_to_vector(netlist: HashMap<String, Vec<String>>) -> (Vec<f64>, HashMa
             let col = *parts_map.get(comp2).unwrap();
 
             if conn_list2.contains(comp1) {
-                // Create symmetric adjacency matrix representing node connections
-                lap_mat[len * row + col] = -1.0;
-                lap_mat[len * col + row] = -1.0;
-
-                // Fill diagonal with number of edges (degree matrix)
-                lap_mat[len * row + row] += 1.0;
-
-                graph.get(&row).unwrap().push(col);
+                graph.get_mut(&row).unwrap().push(col);
             }
         }
     }
 
-    (lap_mat, graph, len)
+    let designators = parts.into_iter().collect();
+
+    (graph, designators)
 }
 
 fn generate_matrix(graph: &HashMap<usize, Vec<usize>>) -> CsrMatrix<f64> {
@@ -86,34 +70,41 @@ fn generate_matrix(graph: &HashMap<usize, Vec<usize>>) -> CsrMatrix<f64> {
     CsrMatrix::from(&coo)
 }
 
-fn calc_cuts(graph: HashMap<usize, Vec<usize>>, group: Vec<usize>) -> usize {
+fn calc_cuts(graph: &HashMap<usize, Vec<usize>>, group: &Vec<usize>) -> usize {
+    let group1 = group;
+    let group2: Vec<usize> = graph.keys().copied().filter(|p| !group1.contains(p)).collect();
 
+    let mut total_cuts = 0;
+    for p1 in group1 {
+        let conns = graph.get(p1).unwrap();
+        for p2 in conns {
+            if !group1.contains(p2) {
+                total_cuts += 1;
+            }
+        }
+    }
+
+    total_cuts
 }
 
-// fn transpose(m: Vec<f64>, l: usize) -> Vec<f64> {
-//     let mut n = vec![0.0; l * l];
-//     for row in 0..l {
-//         for col in 0..l {
-//             n
-//         }
-//     }
-// }
+fn print_group(group: &Vec<usize>, desig: &Vec<String>) {
+    let mut v: Vec<String> = group.iter().map(|r| (&desig[*r]).to_string()).collect();
+    v.sort();
+    println!("group:\n{:?}", v);
+}
 
 fn main() {
-    let contents = fs::read_to_string("input/input.txt").unwrap();
+    let contents = fs::read_to_string("input/example.txt").unwrap();
     let contents = contents.trim();
     let netlist = parse_netlist(contents);
-    // let (lap_mat, len) = netlist_to_vector(netlist);
-    let (lap_vec, len) = netlist_to_vector(netlist);
-    let lap_mat = DMatrix::from_vec(len, len, lap_vec);
+    
+    let (graph, desig) = netlist_to_vector(netlist);
+    println!("graph:\n{:?}", graph);
+    let len = graph.len();
+    let mat = generate_matrix(&graph);
 
-    let mut coo = CooMatrix::<f64>::new(len, len);
-    println!("len = {}", coo.ncols());
-
-    coo.push_matrix(0, 0, &lap_mat);
-    let csr = CsrMatrix::from(&coo);
-    println!("csr = {}", csr.ncols());
-    let svd = svd(&csr).unwrap();
+    println!("mat = {}", mat.ncols());
+    let svd = svd(&mat).unwrap();
     println!("svd.d = {}", svd.d);
     // println!("svd.s:\n{:?}", svd.s);
     println!("svd.ut:\n{}", svd.ut.t().column(13).len());
@@ -121,20 +112,35 @@ fn main() {
     let ut = svd.ut.t();
 
     println!("eigenvalues:\n{}", svd.s);
+    println!();
 
     let v = ut.column(svd.d - 1);
+    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
+    print_group(&group, &desig);
+    let cuts = calc_cuts(&graph, &group);
     let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
     let g2_len = len - g1_len;
+    println!("cuts = {}", cuts);
     println!("answer = {}", g1_len * g2_len);
+    println!();
 
     let v = ut.column(svd.d - 2);
+    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
+    print_group(&group, &desig);
+    let cuts = calc_cuts(&graph, &group);
     let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
     let g2_len = len - g1_len;
+    println!("cuts = {}", cuts);
     println!("answer = {}", g1_len * g2_len);
+    println!();
 
     let v = ut.column(svd.d - 3);
+    let group = v.indexed_iter().filter(|(_, v)| **v > 0.0).map(|(i, _)| i).collect();
+    print_group(&group, &desig);
+    let cuts = calc_cuts(&graph, &group);
     let g1_len = v.iter().filter(|x| (**x) > 0.0).count();
     let g2_len = len - g1_len;
+    println!("cuts = {}", cuts);
     println!("answer = {}", g1_len * g2_len);
 
     // let eig = lap_mat.symmetric_eigen();
